@@ -52,13 +52,38 @@ def merged_entitlements(profile: bytes, entitlements: Optional[bytes]) -> bytes:
     a.update(b)
   return plistlib.dumps(a)
 
-def do_resign(identity: str, provisioning_profile: str, entitlement: Optional[str], target: str, output: str) -> None:
+def modify_info(bundle_path: str, display_name: str = None, schemes: list = None) -> None:
+  import plistlib
+  info_paths = [l for l in ShellProcess(f'/usr/bin/find "{bundle_path}" -name "Info.plist" -depth 1 -print0', check=True).invoked().split('\0') if l]
+  for info_plist in info_paths:
+    if schemes or display_name:
+      with open(info_plist, 'rb+') as file:
+        plist_data = plistlib.load(file)
+        bundle_id = plist_data['CFBundleIdentifier']
+        # modify schemes
+        if schemes:
+          log.info(f'[.] add schemes: {schemes}')
+          plist_data['CFBundleURLTypes'] = plist_data['CFBundleURLTypes'] if 'CFBundleURLTypes' in plist_data else []
+          plist_data['CFBundleURLTypes'].append({
+            "CFBundleTypeRole": "Editor",
+            "CFBundleURLName": bundle_id,
+            "CFBundleURLSchemes": schemes
+          })
+        if display_name:
+          log.info(f'[.] modify display_name: {display_name}')
+          plist_data['CFBundleDisplayName'] = display_name
+        # save
+        file.seek(0)
+        plistlib.dump(plist_data, file)
+
+def do_resign(identity: str, provisioning_profile: str, entitlement: Optional[str], display_name: Optional[str], schemes: Optional[str], target: str, output: str) -> None:
   import shlex
   import shutil
   import tempfile
 
-  identity = shlex.quote(identity)
-  provisioning_profile = shlex.quote(provisioning_profile)
+  # Commenting it out because it adds single quotes to the variable value, causing the shell command to fail.
+  # identity = shlex.quote(identity)
+  # provisioning_profile = shlex.quote(provisioning_profile)
   target = shlex.quote(target)
   output = shlex.quote(output)
 
@@ -68,12 +93,19 @@ def do_resign(identity: str, provisioning_profile: str, entitlement: Optional[st
     ShellProcess(f'unzip -q {target}', check=True).invoked()
     bundle_path = resolved_path_of('Payload', '*.app')
     log.info('[.] manipulating profile and entitlements')
-    profiled_paths = [l for l in ShellProcess(f'find "{bundle_path}" -name "embedded.mobileprovision" -print0', check=True).invoked().split('\0') if l]
-    for l in profiled_paths:
+    profiled_paths = [l for l in ShellProcess(f'/usr/bin/find "{bundle_path}" -name "embedded.mobileprovision" -print0', check=True).invoked().split('\0') if l]
+    if profiled_paths:
+      for l in profiled_paths:
         shutil.copyfile(provisioning_profile, l)
+    else:
+      shutil.copyfile(provisioning_profile, os.path.join(bundle_path, 'embedded.mobileprovision'))
     if entitlement is not None:
       shutil.copyfile(entitlement, os.path.join(bundle_path, 'ent.xcent'))
-
+      
+    # modify info
+    if schemes or display_name:
+      modify_info(bundle_path, display_name=display_name, schemes=schemes)
+        
     with tempfile.NamedTemporaryFile() as tf:
       try:
         ent = open(resolved_path_of(bundle_path, '*.xcent'), 'rb').read()
@@ -83,9 +115,9 @@ def do_resign(identity: str, provisioning_profile: str, entitlement: Optional[st
       tf.flush()
 
       log.info('[.] replacing signatures')
-      ShellProcess(r'find -E "{}" -depth -regex "^.*\.(app|appex|framework|dylib|car)" -print0 | xargs -0 codesign -vvvvf -s "{}" --deep --entitlements {}'.format(bundle_path, identity, tf.name), check=True).invoked()
+      ShellProcess(r'/usr/bin/find -E "{}" -depth -regex "^.*\.(app|appex|framework|dylib|car)" -print0 | xargs -0 codesign -vvvvf -s "{}" --deep --entitlements {}'.format(bundle_path, identity, tf.name), check=True).invoked()
 
-    log.info('[.] generating ipa')
+    log.info(f'[.] generating ipa: {output}')
     ShellProcess('rm -f {target} && zip -qr {target} *'.format(target=output), check=True).invoked()
 
 def entry() -> None:
@@ -99,6 +131,8 @@ def entry() -> None:
   parser.add_argument('-i', '--identity', required=True, help='Identity to use, typically fingerprint of the certificate')
   parser.add_argument('-p', '--profile', required=True, help='Provisioning profile file to use')
   parser.add_argument('-e', '--entitlement', help='Entitlement to include, if any')
+  parser.add_argument('-n', '--name', help='Modify app display name, if any')
+  parser.add_argument('-s', '--schemes', nargs='+', help='Add app url schemes to info.plist, if any')
   args = parser.parse_args()
 
   if not args.output:
@@ -113,8 +147,13 @@ def entry() -> None:
     identity=args.identity,
     provisioning_profile=os.path.realpath(args.profile),
     entitlement=os.path.realpath(args.entitlement) if args.entitlement else None,
+    display_name=args.name,
+    schemes=args.schemes,
     target=os.path.realpath(args.target),
     output=os.path.realpath(args.output),
   )
 
   log.info('[+] done')
+
+if __name__ == '__main__':
+  entry()
