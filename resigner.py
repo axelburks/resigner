@@ -227,7 +227,7 @@ def do_resign(identity: str, provisioning_profile: str, entitlement: Optional[st
       tf.flush()
 
       log.info('[.] replacing signatures')
-      ShellProcess(r'/usr/bin/find -E "{}" -depth -regex "^.*\.(app|appex|framework|dylib|car)" -print0 | xargs -0 codesign -vvvvf -s "{}" --deep --entitlements {}'.format(bundle_path, identity, tf.name), check=True).invoked()
+      ShellProcess(r'/usr/bin/find -E "{}" -depth -regex "^.*\.(app|xctest|appex|framework|dylib|car)" -print0 | xargs -0 codesign -vvvvf -s "{}" --deep --entitlements {}'.format(bundle_path, identity, tf.name), check=True).invoked()
 
     log.info(f'[.] generating ipa: {output}')
     ShellProcess('rm -f {target} && zip -qr {target} *'.format(target=output), check=True).invoked()
